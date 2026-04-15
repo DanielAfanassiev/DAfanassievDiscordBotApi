@@ -6,28 +6,43 @@ import spreadsheet_writer
 CSFLOAT_API_URL = "https://csfloat.com/api/v1/listings"
 
 MINUTES = 0
-HOURS = 0
-DAYS = 1
+HOURS = 2
+DAYS = 0
 
 QUERY_THRESHOLD_MINUTES = DAYS * (60*24) + HOURS * 60 + MINUTES
 
 failed_items = ""
+failed_items_list = read_from_cache("failed_items_list.txt")
+
+if failed_items_list == {}:
+    failed_items_list = []
+
 cooldown_override = False
+try_again_time = 0
 cached_items_dict = read_from_cache("cached_items_dict.txt") # structure {key: item_name, {key: price, key: last_retrieval}}
 cached_steam64_ids_dict = read_from_cache("cached_steam64_ids_dict.txt")
+
+cached_cases_dict = read_from_cache("case_price_history.txt")
+
+cs2_item_rankings = ["★","Contraband", "Covert", "Classified", "Master", "Superior", "Exceptional", "Extraordinary", "Exotic", "Remarkable" "Restricted", "Distinguished", "Mil-spec"]
 
 def get_lowest_avg_price(item_name, count=20):
     global cached_items_dict
     global cooldown_override
+    global failed_items
+    global try_again_time
+
+    now = int(time.time())
 
     if cached_items_dict and item_name in cached_items_dict:
         last_retrieval_time = cached_items_dict[item_name]["last_retrieval_time"]
         if is_cache_valid(last_retrieval_time, QUERY_THRESHOLD_MINUTES) or cooldown_override:
             log("Using cached item for " + item_name)
+            if(item_name in failed_items_list):
+                failed_items_list.remove(item_name)
             return cached_items_dict[item_name]["avg_price"]
         else:
             log("Not using cached item for " + item_name + ", too old.")
-    log("Calling API for " + item_name)
     params = {
         "market_hash_name": item_name,
         "sort_by": "lowest_price",
@@ -36,29 +51,25 @@ def get_lowest_avg_price(item_name, count=20):
     }
 
     headers = {
-    "Authorization": get_keys.get_key("csfloat"),
-    "Content-Type": "application/json"
+        "Authorization": get_keys.get_key("csfloat"),
+        "Content-Type": "application/json"
     }
 
-    cooldown_override = False
-    try:
-        response = requests.get(CSFLOAT_API_URL, params=params, headers=headers)
-        response.raise_for_status()
-    except Exception as e:
-        if("429" in str(e)):
-            print("still on cooldown")
-            cooldown_override = True
+    cooldown_override = now < try_again_time
+    response = None
+    if(not cooldown_override):
+        try:
+            log("Calling API for " + item_name)
+            response = requests.get(CSFLOAT_API_URL, params=params, headers=headers)
+            response.raise_for_status()
+        except Exception as e:
+            if("429" in str(e)):
+                print("still on cooldown")
+                cooldown_override = True
 
     if(not cooldown_override):
-        remaining = int(response.headers.get("x-ratelimit-remaining", 0) or 0)
-        reset_time = int(response.headers.get("x-ratelimit-reset", 0) or 0)
-        reset = datetime.datetime.fromtimestamp(reset_time).strftime("%Y-%m-%d %H:%M:%S")
-
-        now = int(time.time())
-        seconds_left = reset_time - now
-
-        log(str(remaining) + " calls to csfloat remaining until " + str(reset) + ". (" + str(seconds_left/60) + " minutes left)")
-
+        try_again_time = 0
+        print("Success: reamining calls = " + str(int(response.headers.get("x-ratelimit-remaining", 0) or 0)))
         data = response.json()
 
         listings = data.get("data", [])
@@ -76,14 +87,29 @@ def get_lowest_avg_price(item_name, count=20):
 
         avg_price = (sum(lowest) / len(lowest)) / 100
     else:
+        if(not response is None):
+            remaining = int(response.headers.get("x-ratelimit-remaining", 0) or 0)
+            reset_time = int(response.headers.get("x-ratelimit-reset", 0) or 0)
+            try_again_time = reset_time
+            reset = datetime.datetime.fromtimestamp(reset_time).strftime("%Y-%m-%d %H:%M:%S")
+
+            now = int(time.time())
+            seconds_left = reset_time - now
+
+            log(str(remaining) + " calls to csfloat remaining until " + str(reset) + ". (" + str(seconds_left/60) + " minutes left)")
+
         if(item_name in cached_items_dict):
             avg_price = cached_items_dict[item_name]["avg_price"]
+            failed_items += "\n" + item_name + " Used expired cached value"
         else:
-            return 0
+            failed_items += "\n" + item_name + " On cooldown and not found in cache"
+            if(not item_name in failed_items_list):
+                failed_items_list.append(item_name)
+            return None
 
     print(f"{item_name}: {avg_price:.2f}")
 
-    cached_items_dict[item_name] = {"avg_price": round(avg_price,2), "last_retrieval_time": int(time.time())}
+    cached_items_dict[item_name] = {"avg_price": round(avg_price,2), "last_retrieval_time": now}
     write_to_cache(cached_items_dict, "cached_items_dict.txt")
 
     return round(avg_price,2)
@@ -130,13 +156,15 @@ def get_cases_item_dict():
     for line in raw_lines:
         count = int(line[line.rfind(" ") + 1:])
         case_name = written_name_to_actual_name(line[:line.find(":")])
-        cases[case_name] = (count, get_lowest_avg_price(case_name))
+        cases[case_name] = (count, 0 if (p := get_lowest_avg_price(case_name)) is None else p)
 
-    return cases
+    return cases, time.time()
 
 
 def run_case_price_check():
-    cases = get_cases_item_dict()
+    cases, time = get_cases_item_dict()
+    cached_cases_dict[time] = cases
+    write_to_cache(cached_cases_dict, "case_price_history.txt")
     return item_dict_to_string(cases, True)
 
 def get_inventory(steam_url):
@@ -157,9 +185,24 @@ def get_inventory(steam_url):
         desc = desc_map.get(key)
 
         if desc and desc.get("marketable") == 1:
-            items.append(desc["market_hash_name"])
+            items.append((desc["market_hash_name"], desc["type"]))
 
+    items = sort_inventory_by_rarity(items)
     return items #Raw list, may include duplicate items
+
+def sort_inventory_by_rarity(inventory_items):
+    global cs2_item_rankings
+    sorted_inventory = []
+    for rarity in cs2_item_rankings:
+        for item in inventory_items:
+            if (rarity in item[1]) and item[0] not in sorted_inventory:
+                sorted_inventory.append(item[0])
+
+    for items in inventory_items:
+        if items[0] not in sorted_inventory:
+            sorted_inventory.append(items[0])
+
+    return sorted_inventory
 
 def get_date_for_filename():
     current_date = datetime.datetime.now()
@@ -212,7 +255,7 @@ def inventory_to_item_dict(inventory, get_value):
     for item in inventory:
         if item not in item_dict:
             if(get_value):
-                avg_price = get_lowest_avg_price(item)
+                avg_price = 0 if (p := get_lowest_avg_price(item)) is None else p
             else:
                 avg_price = -1
             item_dict[item] = (1, avg_price)
@@ -222,15 +265,15 @@ def inventory_to_item_dict(inventory, get_value):
     return item_dict
 
 def item_dict_to_string(item_dict, price_included):
-    item_string = ""
     global failed_items
+    item_string = ""
     if(price_included):
         sorted_item_list = sort_item_dict(item_dict)
     else:
         sorted_item_list = get_item_list_from_dict(item_dict)
     total_value = 0
     for item in sorted_item_list:
-        item_string += (item[0] + ":\n")
+        item_string += (item[0] + "\n")
         more_than_1 = item[1] > 1
         if(more_than_1):
             item_string += "   Count: " + str(item[1]) + "\n"
@@ -259,12 +302,11 @@ def get_item_list_from_dict(item_dict):
 
 def sort_item_dict(item_dict):
     global failed_items
-    failed_items = ""
     sorted_item_list = []
     for item in list(item_dict.keys()):
         if item_dict[item][1] is None:
             print(item + " failed")
-            failed_items += item + ", "
+            failed_items += "\n" + item + " not found in item dict"
             item_dict.pop(item)
 
     while(len(item_dict) > 0):
@@ -276,7 +318,7 @@ def sort_item_dict(item_dict):
 
 def get_max_value_item(item_dict):
     max_item = ""
-    max_value = 0
+    max_value = -1
     for item in item_dict:
         if item_dict[item][1] > max_value:
             max_value = item_dict[item][1]
@@ -285,13 +327,18 @@ def get_max_value_item(item_dict):
     return max_item
 
 def get_inventory_value(steam_profile_url):
+    global failed_items
+    failed_items = ""
+
     inventory = get_inventory(steam_profile_url)
+    inventory = remove_cheap_items(inventory)
 
     steam_64 = parse_steam_url(steam_profile_url)
 
     item_dict = inventory_to_item_dict(inventory, True)
     spreadsheet_writer.add_spreadsheet_datapoint_inventory(item_dict, steam_64)
     spreadsheet_writer.create_inventory_spreadseet(steam_64, [0,1])
+    write_to_cache(failed_items_list, "failed_items_list.txt")
     return item_dict_to_string(item_dict, True)
 
 def get_inventory_no_value(steam_profile_url):
@@ -337,6 +384,42 @@ def shorten_wear(item_name):
 
     else:
         return item_name
+
+def remove_cheap_items(inventory_list):
+    cheap_items = ["Graffiti"]
+    removed_items = []
+    noncheap_items = []
+    for item in inventory_list:
+        for cheap_item in cheap_items:
+            if cheap_item not in item:
+                noncheap_items.append(item)
+            else:
+                removed_items.append(item)
+
+    return noncheap_items
+
+def retrieve_price_of_failed_items():
+    global failed_items_list
+    global try_again_time
+
+    if(failed_items_list == []):
+        return 0
+
+    log("Trying to retrieve: " + str(len(failed_items_list)) + " failed items")
+    log("Failed items list: " + list_to_string(failed_items_list), "failed_items_log.txt")
+
+    full_cycle = False
+
+    while (int(time.time()) > try_again_time and not full_cycle):
+        for item in failed_items_list:
+            avg_price = get_lowest_avg_price(item)
+            if(not avg_price is None):
+                cached_items_dict[item] = {"avg_price": round(avg_price ,2), "last_retrieval_time": int(time.time())}
+                write_to_cache(cached_items_dict, "cached_items_dict.txt")
+        full_cycle = True
+
+    write_to_cache(failed_items_list, "failed_items_list.txt")
+    return try_again_time
 
 if __name__ == "__main__":
     steam_user_url = "https://steamcommunity.com/id/danfrommcdonalds/"

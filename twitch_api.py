@@ -1,3 +1,5 @@
+import aiohttp
+
 from helpers import *
 
 import requests
@@ -47,7 +49,7 @@ def get_startup_statuses(users):
             last_game_dict[user] = "streamer-offline"
     return current_statuses
 
-def check_for_category_change(user_login):
+async def check_for_category_change(user_login):
     global last_game_dict
 
     if(len(user_login) < 1):
@@ -60,13 +62,15 @@ def check_for_category_change(user_login):
 
     params = build_params_for_category_check(user_login)
 
-    res = requests.get(
-        "https://api.twitch.tv/helix/streams",
-        headers=headers,
-        params=params
-    )
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+                "https://api.twitch.tv/helix/streams",
+                headers=headers,
+                params=params
+        ) as res:
+            data = await res.json()
 
-    for stream in res.json()["data"]: # Online
+    for stream in data["data"]: # Online
         if not (last_game_dict[stream["user_login"]] == stream["game_name"]): # Online, game changed
             if(last_game_dict[stream["user_login"]] == "streamer-offline"):
                 update_dict[stream["user_login"]] = " is now online and playing " + stream["game_name"]
@@ -78,13 +82,16 @@ def check_for_category_change(user_login):
             no_updates.append(stream["user_login"])
 
     for stream in last_game_dict:
-        log(stream + ": " + last_game_dict[stream], "streamer_logs.txt")
         if (not stream in update_dict) and (not stream in no_updates): # Streamer offline
             if(last_game_dict[stream] != "streamer-offline"): # Streamer was online, but no longer online
                 update_dict[stream] = " is now offline."
                 last_game_dict[stream] = "streamer-offline"
 
-    return update_dict
+    username_update_dict = {}
+    for item in update_dict:
+        username_update_dict[get_twitch_username(item)] = update_dict[item]
+
+    return username_update_dict
 
 def build_params_for_category_check(users):
     global last_game_dict

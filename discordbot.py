@@ -2,14 +2,15 @@ import asyncio
 import io
 import cs2_inventory_stuff as cs2pc
 import discord
-import get_keys
+
+import helpers
 import twitch_api
 from helpers import *
 from discord.ext import commands, tasks
+from get_keys import get_key
 
 intents = discord.Intents.default()
 intents.message_content = True  # required for reading messages
-
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 last_cases_result = "No cached cases value"
@@ -26,6 +27,11 @@ bot_bugs = read_from_cache("bot_bugs.txt")
 
 watched_twitch_channels_cache = read_from_cache("watched_twitch_channels.txt")
 
+TLMILLISECONDS = 500
+twitch_loop_seconds = TLMILLISECONDS/1000
+
+bot_try_again_time = 0
+
 if("userid_to_ping" in watched_twitch_channels_cache and "discord_channelid_to_ping" in watched_twitch_channels_cache and "channels" in watched_twitch_channels_cache):
     userid_to_ping = watched_twitch_channels_cache["userid_to_ping"]
     discord_channelid_to_ping = watched_twitch_channels_cache["discord_channelid_to_ping"]
@@ -40,6 +46,8 @@ async def on_ready():
     print(f"Logged in as {bot.user}")
     await get_initial_stream_statuses()
     watch_loop.start()
+    cache_cs2_items_loop.start()
+    cases_loop.start()
 
 @bot.command()
 async def ping(ctx):
@@ -68,6 +76,7 @@ async def inventory_value(ctx):
     try:
         url = get_args(ctx.message.content)[0].lower()
         response = await asyncio.to_thread(cs2pc.get_inventory_value, url)
+        print("returned")
         total_value = response[response.find("Total value"):]
         await send_message(total_value)
         await send_message(response)
@@ -83,9 +92,7 @@ async def inventory(ctx):
     global is_running
     is_running = True
 
-    url = get_args(ctx.message.content)[0].lower()
-
-    print(url)
+    url = get_args(ctx.message.content)[0]
 
     final_string = await asyncio.to_thread(cs2pc.get_inventory_no_value, url)
     await send_message(final_string)
@@ -201,6 +208,20 @@ async def dmme(ctx):
     await send_message("Meow", channel)
 
 @bot.command()
+async def dm(ctx):
+    args = get_args(ctx.message.content)
+    user_id = int(args[0])
+    message = args_to_full_string(args)
+
+    user = bot.get_user(user_id)
+    if(user is None):
+        user = await bot.fetch_user(user_id)
+        if(user is None):
+            print("DM Failed")
+
+    await user.send(message)
+
+@bot.command()
 async def idea(ctx):
     global bot_ideas
     args = get_args(ctx.message.content)
@@ -214,6 +235,7 @@ async def idea(ctx):
         idea_to_remove = list(bot_ideas.keys())[int(description)]
         bot_ideas.pop(idea_to_remove)
         await send_message(f"Idea {idea_to_remove} removed")
+        write_to_cache(bot_ideas, "bot_ideas.txt")
         return
 
     bot_ideas[my_idea] = args_to_full_string(args)
@@ -249,6 +271,7 @@ async def bug(ctx):
         bug_to_remove = list(bot_bugs.keys())[int(description)]
         bot_bugs.pop(bug_to_remove)
         await send_message(f"bug {bug_to_remove} removed")
+        write_to_cache(bot_bugs, "bot_bugs.txt")
         return
 
     bot_bugs[my_bug] = args_to_full_string(args)
@@ -270,7 +293,7 @@ async def bugs(ctx):
         count += 1
     await send_message(bug_string)
 
-@tasks.loop(hours=1)
+@tasks.loop(hours=2)
 async def cases_loop():
     print("running cases loop")
     global last_cases_result
@@ -278,18 +301,22 @@ async def cases_loop():
     cs2pc.write_results_to_file(last_cases_result)
     print("done running cases loop")
 
-@tasks.loop(seconds=30)
+@tasks.loop(seconds=twitch_loop_seconds)
 async def watch_loop():
     if len(watched_twitch_channels) < 1:
         watch_loop.stop()
     else:
-        response = twitch_api.check_for_category_change(watched_twitch_channels)
+        response = await twitch_api.check_for_category_change(watched_twitch_channels)
         if(len(response.keys()) > 0):
             for streamer in response:
                 log(streamer + response[streamer], "streamer_logs.txt")
                 await ping_category_change(streamer + response[streamer])
-        else:
-            log("All streamer statuses unchanged", "streamer_logs.txt")
+
+@tasks.loop(seconds=30)
+async def cache_cs2_items_loop():
+    global bot_try_again_time
+    if(bot_try_again_time < int(time.time())):
+        bot_try_again_time = await asyncio.to_thread(cs2pc.retrieve_price_of_failed_items)
 
 async def get_initial_stream_statuses():
     streamers = twitch_api.get_startup_statuses(watched_twitch_channels)
@@ -337,4 +364,14 @@ def args_to_full_string(msg):
 
     return string_to_return
 
-bot.run(get_keys.get_key("discord"))
+log_dir_size_bytes = get_dir_size()
+log_dir_size_KB = size_bytes_to_next(log_dir_size_bytes)
+log_dir_size_MB = size_bytes_to_next(log_dir_size_KB)
+
+cache_dir_size_bytes = get_dir_size(helpers.CACHE_DIR)
+cache_dir_size_KB = size_bytes_to_next(cache_dir_size_bytes)
+cache_dir_size_MB = size_bytes_to_next(cache_dir_size_KB)
+
+print("Current log size: " + str(log_dir_size_bytes) + " Bytes / " + str(round(log_dir_size_KB, 2)) + " KB / " + str(round(log_dir_size_MB, 2)) + " MB")
+print("Current cache size: " + str(cache_dir_size_bytes) + " Bytes / " + str(round(cache_dir_size_KB, 2)) + " KB / " + str(round(cache_dir_size_MB, 2)) + " MB")
+bot.run(get_key("discord"))
