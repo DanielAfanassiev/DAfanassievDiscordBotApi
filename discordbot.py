@@ -5,6 +5,7 @@ import discord
 
 import helpers
 import twitch_api
+import faceit
 from helpers import *
 from discord.ext import commands, tasks
 from get_keys import get_key
@@ -292,6 +293,15 @@ async def bugs(ctx):
         bug_string += str(count) + ": " + bug + "\n -" + bot_bugs[bug] + "\n\n"
         count += 1
     await send_message(bug_string)
+
+@bot.command()
+async def get_faceit_matches_together(ctx):
+    args = get_args(ctx.message.content)
+    num_matches = 5
+    if(len(args) > 2):
+        num_matches = int(args[2])
+    await send_message(await faceit.get_matches_together(args[0], args[1], num_matches))
+    return
 
 @tasks.loop(hours=2)
 async def cases_loop():

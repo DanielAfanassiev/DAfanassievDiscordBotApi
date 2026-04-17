@@ -29,7 +29,7 @@ def get_player_id(username):
     return data["player_id"]
 
 
-def get_match_history(player_id, game="cs2"):
+async def get_match_history(player_id, game="cs2"):
     url = f"https://open.faceit.com/data/v4/players/{player_id}/history"
     params = {"game": game}
 
@@ -107,3 +107,19 @@ def get_demos(username, max_matches=5):
             download_demo(download_url, filename)
         except Exception as e:
             log(f"Error downloading {filename}: {e}")
+
+async def get_matches_together(username1, username2, max_matches=5):
+    u1matches = await get_match_history(get_player_id(username1))
+    u2matches = await get_match_history(get_player_id(username2))
+    num_found = 0
+    found_matches = []
+    for match in u1matches:
+        if (match in u2matches):
+            found_matches.append(match["faceit_url"].replace("{lang}", "en"))
+            num_found+= 1
+        if(num_found >= max_matches):
+            break
+    found_matches_string = ""
+    for match in found_matches:
+        found_matches_string += match + "\n"
+    return found_matches_string
