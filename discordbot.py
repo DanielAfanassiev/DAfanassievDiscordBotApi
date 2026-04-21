@@ -1,14 +1,17 @@
+import helpers
+from helpers import *
 import asyncio
 import io
 import cs2_inventory_stuff as cs2pc
 import discord
 
-import helpers
 import twitch_api
 import faceit
-from helpers import *
+from cspromatches import get_matches_from_teams, find_team
 from discord.ext import commands, tasks
 from get_keys import get_key
+
+from google_calendar_events import add_event
 
 intents = discord.Intents.default()
 intents.message_content = True  # required for reading messages
@@ -17,21 +20,30 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 last_cases_result = "No cached cases value"
 
 is_running = False
-is_watching = False
 
 discord_channelid_to_ping = 0
 userid_to_ping = 0
 
-watched_twitch_channels = {}
 bot_ideas = read_from_cache("bot_ideas.txt")
 bot_bugs = read_from_cache("bot_bugs.txt")
 
+#Twitch related
+watched_twitch_channels = {}
 watched_twitch_channels_cache = read_from_cache("watched_twitch_channels.txt")
-
 TLMILLISECONDS = 500
 twitch_loop_seconds = TLMILLISECONDS/1000
+request_returned = True
+is_watching = False
 
 bot_try_again_time = 0
+
+cs2_converted_dict = read_from_cache("cs2_converted_dict.txt")
+watched_cs2_pro_teams = read_from_cache("watched_cs2_pro_teams.txt")
+
+if(watched_cs2_pro_teams == {}):
+    cs2_teams = list()
+else:
+    cs2_teams = watched_cs2_pro_teams
 
 if("userid_to_ping" in watched_twitch_channels_cache and "discord_channelid_to_ping" in watched_twitch_channels_cache and "channels" in watched_twitch_channels_cache):
     userid_to_ping = watched_twitch_channels_cache["userid_to_ping"]
@@ -49,6 +61,7 @@ async def on_ready():
     watch_loop.start()
     cache_cs2_items_loop.start()
     cases_loop.start()
+    add_cs2_matches_to_calendar.start()
 
 @bot.command()
 async def ping(ctx):
@@ -303,6 +316,84 @@ async def get_faceit_matches_together(ctx):
     await send_message(await faceit.get_matches_together(args[0], args[1], num_matches))
     return
 
+@bot.command()
+async def matches(ctx):
+    global cs2_teams
+    result = await get_matches_from_teams(cs2_teams)
+    matches_string = ""
+    for team in result:
+        if not team:
+            continue
+        matches_string += f"{team[0]['Team']}\n"
+        for match in team:
+            matches_string += f"{match['Tournament']}\n{datetime.datetime.fromtimestamp(match['Time']).strftime("%H:%M %d-%m-%Y")} {match['Team']} vs {match['Opponent']}\n\n"
+
+    await send_message(matches_string)
+
+@bot.command()
+async def addteams(ctx):
+    global cs2_teams
+    global cs2_converted_dict
+    teams = get_args(ctx.message.content)
+    for team in teams:
+        if not team in cs2_converted_dict:
+            await get_liquipedia_team_name(team)
+
+        if not cs2_converted_dict[team] in cs2_teams:
+            cs2_teams.append(cs2_converted_dict[team])
+            write_to_cache(cs2_teams, "watched_cs2_pro_teams.txt")
+            await send_message("Started watching: " + cs2_converted_dict[team])
+
+
+@bot.command()
+async def removeteam(ctx):
+    global cs2_teams
+    global cs2_converted_dict
+
+    team = None
+    args = get_args(ctx.message.content)
+    if not len(args) == 0:
+        team = get_args(ctx.message.content)[0]
+
+    if (not team == None) and team in cs2_converted_dict:
+        cs2_teams.remove(await get_liquipedia_team_name(team))
+        write_to_cache(cs2_teams, "watched_cs2_pro_teams.txt")
+        await send_message("Removed " + cs2_converted_dict[team])
+    else:
+        await send_message("Team not found")
+
+@bot.command()
+async def watchedTeams(ctx):
+    global cs2_teams
+
+    watched_teams_string = ""
+
+    if cs2_teams != []:
+        watched_teams_string += "Watching these teams: "
+        for team in cs2_teams:
+            last = team == cs2_teams[-1]
+            watched_teams_string += str(team)
+            if not last:
+                watched_teams_string += ", "
+    else:
+        watched_teams_string += "No teams watched"
+
+    await send_message(watched_teams_string)
+
+@bot.command()
+async def add_cs2_to_calendar(ctx):
+    teams = get_args(ctx.message.content)
+    liquipedia_teams = []
+    for team in teams:
+        liquipedia_teams.append(await get_liquipedia_team_name(team))
+    result = await get_matches_from_teams(liquipedia_teams)
+    for team in result:
+        for match in team:
+            event_name = f'{match['Team']} vs {match['Opponent']}'
+            event_description = f'{match['Tournament']}'
+            event_time = match['Time']
+            add_event(event_name, event_time, event_description)
+
 @tasks.loop(hours=2)
 async def cases_loop():
     print("running cases loop")
@@ -313,14 +404,31 @@ async def cases_loop():
 
 @tasks.loop(seconds=twitch_loop_seconds)
 async def watch_loop():
+    global request_returned
+
+    if(not request_returned):
+        return
     if len(watched_twitch_channels) < 1:
         watch_loop.stop()
     else:
+        request_returned = False
         response = await twitch_api.check_for_category_change(watched_twitch_channels)
         if(len(response.keys()) > 0):
             for streamer in response:
                 log(streamer + response[streamer], "streamer_logs.txt")
                 await ping_category_change(streamer + response[streamer])
+        request_returned = True
+
+@tasks.loop(hours=12)
+async def add_cs2_matches_to_calendar():
+    global cs2_teams
+    result = await get_matches_from_teams(cs2_teams)
+    for team in result:
+        for match in team:
+            event_name = f'{match['Team']} vs {match['Opponent']}'
+            event_description = f'{match['Tournament']}'
+            event_time = match['Time']
+            add_event(event_name, event_time, event_description)
 
 @tasks.loop(seconds=30)
 async def cache_cs2_items_loop():
@@ -373,6 +481,18 @@ def args_to_full_string(msg):
         string_to_return += arg + " "
 
     return string_to_return
+
+async def get_liquipedia_team_name(team_name):
+    global cs2_converted_dict
+
+    if team_name not in cs2_converted_dict:
+        liquipedia_team_name = await find_team(team_name)
+        print(liquipedia_team_name)
+        cs2_converted_dict[team_name] = liquipedia_team_name
+        write_to_cache(cs2_converted_dict, "cs2_converted_dict.txt")
+
+    return cs2_converted_dict[team_name]
+
 
 log_dir_size_bytes = get_dir_size()
 log_dir_size_KB = size_bytes_to_next(log_dir_size_bytes)

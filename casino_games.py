@@ -1,3 +1,5 @@
+import copy
+
 face_cards = {1:"Ace", 11: "Jack", 12: "Queen", 13: "King", 14: "Ace"}
 
 class Card:
@@ -19,6 +21,17 @@ class Deck:
 # myDeck = Deck()
 # for card in myDeck.cards:
 #     print(str(card.name) + " " + str(card.value) + " " + str(card.suit))
+
+hand_rankings = {"Royal Flush": 1,
+                 "Straight Flush": 2,
+                 "Four of a Kind": 3,
+                 "Full House": 4,
+                 "Flush": 5,
+                 "Straight": 6,
+                 "Three of a Kind": 7,
+                 "Two Pair": 8,
+                 "Pair": 9,
+                 "High Card": 10}
 
 def get_hand_type(hand):
     hand_type = ""
@@ -43,7 +56,7 @@ def is_straight(cards, length = 5):
                 max_straight_card = card
         previous_card = card
 
-    return max_sequence >= length, max_straight_card
+    return max_sequence >= length, max_straight_card.value
 
 def is_flush(cards, length = 5):
     cards = sort_by_value(list(cards))
@@ -67,7 +80,7 @@ def is_straight_flush(cards, length = 5):
         return False
     are_cards_straight, max_straight_card = is_straight(flush_cards, length)
 
-    return are_cards_straight, max_straight_card
+    return are_cards_straight, max_straight_card.value
 
 def is_royal_flush(cards, length = 5):
     are_cards_straight_flush, max_sf_card = is_straight_flush(cards, length)
@@ -84,9 +97,18 @@ def is_quads(cards):
             if(quad_val == 1):
                 quad_val = 14
                 cards_dict[14] = cards_dict[1]
+                cards_dict.pop(1)
                 break
     if(quad_val != -1):
-        return True, cards_dict[quad_val]
+        cards_dict_copy = copy.deepcopy(cards_dict)
+        cards_dict_copy.pop(quad_val)
+        new_card_list = []
+        for card_value in cards_dict_copy:
+            for cards in cards_dict_copy[card_value]:
+                new_card_list.append(cards)
+        new_sorted_cards = sort_by_value(cards_dict_copy, True)
+        kicker = new_sorted_cards[0]
+        return True, cards_dict[quad_val].append(kicker)
     return False, None
 
 def is_trips(cards):
@@ -128,6 +150,10 @@ def is_full_house(cards):
             cards.remove(card)
         are_pair, pair_cards = is_pair(cards)
         if(are_pair):
+            if(trips_cards[0].value == 1):
+                trips_cards[0].value = 14
+            if(pair_cards[0].value == 1):
+                pair_cards[0].value = 14
             return True, trips_cards, pair_cards
 
     return False, None, None
@@ -143,6 +169,38 @@ def make_cards_dict(cards):
 def sort_by_value(cards, inverse = False):
     return sorted(cards, key=lambda card: card.value, reverse=inverse)
 
+def get_hand_rank(cards):
+    if(is_royal_flush(cards)):
+        return "Royal Flush", []
+
+    is_sf, sf_max_cards = is_straight_flush(cards)
+    if(is_sf):
+        return "Straight Flush", sf_max_cards
+
+    is_qds, qds_max_card = is_quads(cards)
+    if(is_qds):
+        return "Four of a Kind", qds_max_card
+
+    is_fh, three, two = is_full_house(cards)
+    if(is_fh):
+        return "Full House", [three, two]
+
+    is_str8, max_str8_card = is_straight(cards)
+    if(is_str8):
+        return "Straight", [max_str8_card]
+
+    is_trps, trps_max_card = is_trips(cards)
+    if(is_trps):
+        return "Three of a Kind", [trps_max_card]
+
+    is_pr, pr_max_card = is_pair(cards)
+    if(is_pr):
+        return "Pair", [pr_max_card]
+
+    sorted_cards = sort_by_value(cards)
+    if(sorted_cards[0].value == 1):
+        return "High Card", [sorted_cards[len(sorted_cards) - 1].value]
+    return
 
 royal_flush = [Card(13, "Hearts"), Card(12, "Hearts"),Card(10, "Hearts"),Card(11, "Hearts"),Card(1, "Hearts")]
 low_straight_flush = [Card(4,"Hearts"),Card(2,"Hearts"),Card(1,"Hearts"),Card(3,"Hearts"),Card(5,"Hearts")]
