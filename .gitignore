@@ -1,0 +1,11 @@
+# =========================
+# Python (if you use scripts)
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.csv
+*.txt
+venv/
+.venv/
