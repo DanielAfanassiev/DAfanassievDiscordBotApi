@@ -1,4 +1,5 @@
 from playwright.async_api import async_playwright
+import time
 
 from helpers import log
 
@@ -29,13 +30,16 @@ async def get_matches_from_teams(teams):
                     if opponent_team in matchups:
                         for match in matchups[opponent_team]:
                             match_found = match["Opponent"] == requested_team and match["Time"] == match_time
+                            
+                            if match_found:
+                                break
 
-                    if not match_found:
+                    if match_time > int(time.time()) and not match_found:
                         team_match_list.append({"Time": match_time, "Tournament": tournament, "Team": requested_team, "Opponent": opponent_team})
                         if not requested_team in matchups:
                             matchups[requested_team] = []
                         matchups[requested_team].append({"Opponent": opponent_team, "Time": match_time})
-                    full_content.append(team_match_list)
+                full_content.append(team_match_list)
             except:
                 log(f"No matches found for {team}")
                 pass

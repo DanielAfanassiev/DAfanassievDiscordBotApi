@@ -97,7 +97,7 @@ async def check_for_category_change(user_login):
         username = get_twitch_username(item)
         username_update_dict[username] = update_dict[item]
         if(username == "xQc"):
-            username_update_dict[username] = username_update_dict[username] + "\nsendtweet UPDATE: xQc is now playing " + update_dict[item] + "!"
+            username_update_dict[username] = username_update_dict[username] + "\nUPDATE: xQc is now playing " + update_dict[item] + "!"
 
     return username_update_dict
 
